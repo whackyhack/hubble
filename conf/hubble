@@ -9,6 +9,12 @@
 
 gitfs_remotes:
   - https://github.com/hubblestack/hubblestack_data.git
+## To use locally stored data, comment out the GitFS lines, then uncomment the
+## following
+# file_roots:
+#   base:
+#     - /srv/salt/hubblestack_data
+## In the above example, hubblestack_data is stored under /srv/salt/
 fileserver_backend:
   - roots
   - git
