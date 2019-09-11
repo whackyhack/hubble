@@ -1,11 +1,6 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 Hubble Nova plugin for using iptables to verify firewall rules
-
-:maintainer: HubbleStack / avb76
-:maturity: 2016.7.0
-:platform: Linux
-:requires: SaltStack
 
 This audit module requires yaml data to execute. Running hubble.audit will
 search the local directory for any .yaml files and it will pass all the data to
@@ -34,6 +29,8 @@ firewall:
       # The rest of these attributes are optional, and currently not used
       alert: email
       trigger: state
+      labels:
+        - critical
 
 A few words about the auditing logic
 The audit function uses the iptables.build_rule salt
@@ -76,7 +73,7 @@ Check the following links for more details:
   (https://docs.saltstack.com/en/latest/ref/modules/all/salt.modules.iptables.html#salt.modules.iptables.build_rule)
   - iptables salt execution module source code (search for the build_rule function inside):
   (https://github.com/saltstack/salt/blob/develop/salt/modules/iptables.py)
-'''
+"""
 
 from __future__ import absolute_import
 import logging
@@ -84,6 +81,8 @@ import logging
 import fnmatch
 import copy
 import salt.utils
+import salt.utils.platform
+import salt.utils.path
 
 log = logging.getLogger(__name__)
 
@@ -92,17 +91,38 @@ __data__ = None
 
 
 def __virtual__():
-    if salt.utils.is_windows():
+    if salt.utils.platform.is_windows():
         return False, 'This audit module only runs on linux'
-    if not salt.utils.which('iptables'):
+    if not salt.utils.path.which('iptables'):
         return (False, 'The iptables execution module cannot be loaded: iptables not installed.')
     return True
 
+def apply_labels(__data__, labels):
+    """
+    Filters out the tests whose label doesn't match the labels given when running audit and returns a new data structure with only labelled tests.
+    """
+    labelled_data = {}
+    if labels:
+        labelled_data['firewall'] = {}
+        for topkey in ('blacklist', 'whitelist'):
+            if topkey in __data__.get('firewall', {}):
+                labelled_test_cases=[]
+                for test_case in __data__['firewall'].get(topkey, []):
+                    # each test case is a dictionary with just one key-val pair. key=test name, val=test data, description etc
+                    if isinstance(test_case, dict) and test_case:
+                        test_case_body = test_case.get(next(iter(test_case)))
+                        if set(labels).issubset(set(test_case_body.get('labels',[]))):
+                            labelled_test_cases.append(test_case)
+                labelled_data['firewall'][topkey]=labelled_test_cases
+    else:
+        labelled_data = __data__
+    return labelled_data
 
-def audit(data_list, tags, debug=False, **kwargs):
+def audit(data_list, tags, labels, debug=False, **kwargs):
     __data__ = {}
     for profile, data in data_list:
         _merge_yaml(__data__, data, profile)
+    __data__ = apply_labels(__data__, labels)
     __tags__ = _get_tags(__data__)
 
     if debug:
@@ -164,9 +184,9 @@ def audit(data_list, tags, debug=False, **kwargs):
 
 
 def _merge_yaml(ret, data, profile=None):
-    '''
+    """
     Merge two yaml dicts together at the pkg:blacklist and pkg:whitelist level
-    '''
+    """
     if 'firewall' not in ret:
         ret['firewall'] = {}
     for topkey in ('blacklist', 'whitelist'):

@@ -21,8 +21,6 @@
 !include "x64.nsh"
 !include "WinMessages.nsh"
 !include "WinVer.nsh"
-${StrLoc}
-${StrStrAdv}
 
 !ifdef HubbleVersion
     !define PRODUCT_VERSION "${HubbleVersion}"
@@ -41,20 +39,13 @@ ${StrStrAdv}
 	!define PFILES "Program Files"
 !endif
 
-; Part of the Trim function for Strings
-!define Trim "!insertmacro Trim"
-!macro Trim ResultVar String
-    Push "${String}"
-    Call Trim
-    Pop "${ResultVar}"
-!macroend
 
 
 ;--------------------------------
 ;General
   ;Name and File
   Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-  OutFile "Hubble-${PRODUCT_VERSION}-${CPUARCH}-Setup.exe"
+  OutFile "Hubble-${PRODUCT_VERSION}-Setup.exe"
   
   ;Default Installation folder
   InstallDir "C:\${PFILES}\Hubble"
@@ -126,7 +117,7 @@ ${StrStrAdv}
   Function pageHubbleConfig
 
     # Set Page Title and Description
-    !insertmacro MUI_HEADER_TEXT "Hubble Settings" "Set the Token and Index for Splunk"
+    !insertmacro MUI_HEADER_TEXT "Hubble Settings" "Set the Token and Index for Splunk (Click Next to Skip)"
     nsDialogs::Create 1018
     Pop $Dialog
 
@@ -252,8 +243,8 @@ ${StrStrAdv}
     SetOutPath "$INSTDIR\"
     SetOverwrite ifdiff 
 	CreateDirectory $INSTDIR\var
+    CreateDirectory $INSTDIR\etc\hubble\hubble.d
     File /r "..\..\dist\hubble\"
-	File "..\osqueryi.exe"
 
   SectionEnd
   
@@ -289,15 +280,20 @@ ${StrStrAdv}
     ; Register the Hubble Service
     nsExec::Exec "nssm.exe install Hubble $INSTDIR\hubble.exe"
     nsExec::Exec "nssm.exe set Hubble Description Open Source software for security compliance"
-    nsExec::Exec "nssm.exe set Hubble Application $INSTDIR\PortableGit\git-cmd.exe"
+    nsExec::Exec "nssm.exe set Hubble Application $INSTDIR\hubble.exe"
     nsExec::Exec "nssm.exe set Hubble AppDirectory $INSTDIR"
-    nsExec::Exec "nssm.exe set Hubble AppParameters hubble.exe -c .\etc\hubble\hubble.conf"
+    nsExec::Exec "nssm.exe set Hubble AppParameters -c .\etc\hubble\hubble.conf"
     nsExec::Exec "nssm.exe set Hubble Start SERVICE_AUTO_START"
 
+    ExecWait 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File .\prerequisites.ps1 "$INSTDIR" -FFFeatureOff'
+    ExecWait 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File .\osqueryd_safe_permissions.ps1 "$INSTDIR" -FFFeatureOff'
     RMDir /R "$INSTDIR\var\cache" ; removing cache from old version
 
-    Call updateHubbleConfig
-
+    ${if} $HECToken_State != "xxxxx-xxx-xxx-xxx-xxxxxx"
+	${AndIf} $HECToken_State != ""
+        Call makeUserConfig
+    ${endif}
+	
     Push "C:\${PFILES}\Hubble"
     Call AddToPath
 
@@ -347,6 +343,7 @@ ${StrStrAdv}
     ; Stop and Remove hubble service
     nsExec::Exec 'net stop hubble'
     nsExec::Exec 'sc delete hubble'
+    nsExec::Exec 'sc delete hubble_osqueryd'
 
     ; Remove files
     Delete "$INSTDIR\uninst.exe"
@@ -396,8 +393,6 @@ ${StrStrAdv}
 ;functions
 
   Function .onInit
-
-    Call getHubbleConfig
 
     Call parseCommandLineSwitches
 
@@ -480,41 +475,6 @@ ${StrStrAdv}
     StrCpy $NeedVcRedist "True"
 
   FunctionEnd
-
-
-  Function Trim
-
-    Exch $R1 ; Original string
-    Push $R2
-
-    Loop:
-        StrCpy $R2 "$R1" 1
-        StrCmp "$R2" " " TrimLeft
-        StrCmp "$R2" "$\r" TrimLeft
-        StrCmp "$R2" "$\n" TrimLeft
-        StrCmp "$R2" "$\t" TrimLeft
-        GoTo Loop2
-    TrimLeft:
-        StrCpy $R1 "$R1" "" 1
-        Goto Loop
-
-    Loop2:
-        StrCpy $R2 "$R1" 1 -1
-        StrCmp "$R2" " " TrimRight
-        StrCmp "$R2" "$\r" TrimRight
-        StrCmp "$R2" "$\n" TrimRight
-        StrCmp "$R2" "$\t" TrimRight
-        GoTo Done
-    TrimRight:
-        StrCpy $R1 "$R1" -1
-        Goto Loop2
-
-    Done:
-        Pop $R2
-        Exch $R1
-
-  FunctionEnd
-
 
 ;------------------------------------------------------------------------------
 ; StrStr Function
@@ -749,113 +709,43 @@ ${StrStrAdv}
   
 ;--------------------------------
 ;Specialty Fuctions
-
-  Function getHubbleConfig
+  Function makeUserConfig
   
     confFind:
-	IfFileExists "$INSTDIR\etc\hubble\hubble.conf" confFound confNotFound
+	IfFileExists "$INSTDIR\etc\hubble\hubble.d\user.conf" confFound confNotFound
 
     confNotFound:
-    ${If} $INSTDIR == "c:\salt\bin\Scripts"
-        StrCpy $INSTDIR "C:\${PFILES}\hubble\"
-        goto confFind
-    ${Else}
-        goto confReallyNotFound
-    ${EndIf}
+    ClearErrors
+    FileOpen $9 "$INSTDIR\etc\hubble\hubble.d\user.conf" w
+    IfErrors confReallyNotFound
+        goto confLoop
 
     confFound:
-    FileOpen $0 "$INSTDIR\etc\hubble\hubble.conf" r
+    Delete "$INSTDIR\etc\hubble\hubble.d\user.conf"
+        goto confFind
 
     confLoop:
-        FileRead $0 $1
-        IfErrors EndOfFile
-        ${StrLoc} $2 $1 "token:" ">"
-        ${If} $2 == 0
-          ${StrStrAdv} $2 $1 "token: " ">" ">" "0" "0" "0"
-          ${Trim} $2 $2
-            StrCpy $HECToken_State $2
-        ${EndIf}
-
-        ${StrLoc} $2 $1 "index:" ">"
-        ${If} $2 == 0
-          ${StrStrAdv} $2 $1 "index: " ">" ">" "0" "0" "0"
-          ${Trim} $2 $2
-            StrCpy $IndexName_State $2
-        ${EndIf}
-		
-		${StrLoc} $2 $1 "indexer:" ">"
-        ${If} $2 == 0
-          ${StrStrAdv} $2 $1 "indexer: " ">" ">" "0" "0" "0"
-          ${Trim} $2 $2
-            StrCpy $HECToken_State $2
-        ${EndIf}
-
-    Goto confLoop
+    
+        FileWrite $9 "hubblestack:$\r$\n"
+        FileWrite $9 "  returner:$\r$\n"
+        FileWrite $9 "    splunk:$\r$\n"
+        FileWrite $9 "      - token: $HECToken_State$\r$\n"
+        FileWrite $9 "        indexer: $Indexer_State$\r$\n"
+        FileWrite $9 "        index: $IndexName_State$\r$\n"
+        FileWrite $9 "        sourcetype_nova: hubble_audit$\r$\n"
+        FileWrite $9 "        sourcetype_nebula: hubble_osquery$\r$\n"
+        FileWrite $9 "        sourcetype_osqueryd: hubble_osqd$\r$\n"
+        FileWrite $9 "        sourcetype_pulsar: hubble_fim$\r$\n"
+        FileWrite $9 "        sourcetype_log: hubble_log$\r$\n"
+            goto EndOfFile
 
     EndOfFile:
-    FileClose $0
+    FileClose $9
 
     confReallyNotFound:
 
 FunctionEnd
 
-
-Function updateHubbleConfig
-
-    ClearErrors
-    FileOpen $0 "$INSTDIR\etc\hubble\hubble.conf" "r"          ; open target file for reading
-    GetTempFileName $R0                                        ; get new temp file name
-    FileOpen $1 $R0 "w"                                        ; open temp file for writing
-
-    loop:                                                      ; loop through each line
-    FileRead $0 $2                                             ; read line from target file
-    IfErrors done                                              ; end if errors are encountered (end of line)
-
-    ${If} $HECToken_State != ""                                ; if token is empty
-      ${AndIf} $HECToken_State != "salt"                       ; and if token is not 'salt'
-        ${StrLoc} $3 $2 "token:" ">"                           ; where is 'token:' in this line
-        ${If} $3 == 8                                          ; is it in the first...
-          StrCpy $2 "      - token: $HECToken_State$\r$\n"     ; write the token
-      ${EndIf}                                                 ; close if statement
-    ${EndIf}                                                   ; close if statement
-
-    ${If} $IndexName_State != ""                               ; if index is empty
-      ${AndIf} $IndexName_State != "splunk-indexer.domain.tld" ; and if index is not 'hostname'
-        ${StrLoc} $3 $2 "index:" ">"                           ; where is 'index:' in this line
-        ${If} $3 == 8                                          ; is it in the first...
-          StrCpy $2 "        index: $IndexName_State$\r$\n"    ; change line
-      ${EndIf}                                                 ; close if statement
-    ${EndIf}                                                   ; close if statement
-
-	${If} $Indexer_State != ""                                 ; if index is empty
-      ${AndIf} $Indexer_State != "hostname"                    ; and if index is not 'hostname'
-        ${StrLoc} $3 $2 "indexer:" ">"                         ; where is 'index:' in this line
-        ${If} $3 == 8                                          ; is it in the first...
-          StrCpy $2 "        indexer: $Indexer_State$\r$\n"    ; change line
-      ${EndIf}                                                 ; close if statement
-    ${EndIf}                                                   ; close if statement
-	
-    ${StrLoc} $3 $2 "cachedir:" ">"                                  ; where is 'index:' in this line
-      ${If} $3 == 0                                                  ; is it in the first...
-        StrCpy $2 "cachedir: 'C:\${PFILES}\hubble\var\cache'$\r$\n"  ; change line
-      ${EndIf}                                                       ; close if statement
-
-    ${StrLoc} $3 $2 "log_file:" ">"                                           ; where is 'index:' in this line
-      ${If} $3 == 0                                                           ; is it in the first...
-        StrCpy $2 "log_file: 'C:\${PFILES}\hubble\var\log\hubble.log'$\r$\n"  ; change line
-      ${EndIf}                                                                ; close if statement
-
-    FileWrite $1 $2                                            ; write changed or unchanged line to temp file
-    Goto loop
-
-    done:
-    FileClose $0                                               ; close target file
-    FileClose $1                                               ; close temp file
-    Delete "$INSTDIR\etc\hubble\hubble.conf"                   ; delete target file
-    CopyFiles /SILENT $R0 "$INSTDIR\etc\hubble\hubble.conf"    ; copy temp file to target file
-    Delete $R0                                                 ; delete temp file
-
-FunctionEnd
 
 
 Function parseCommandLineSwitches
@@ -897,7 +787,7 @@ Function parseCommandLineSwitches
     ${IfNot} $R1 == ""
         StrCpy $IndexName_State $R1
     ${ElseIf} $IndexName_State == ""
-        StrCpy $IndexName_State "default_hubble"
+        StrCpy $IndexName_State "index"
     ${EndIf}
 	
 	# Hubble Config: Indexer
@@ -905,7 +795,7 @@ Function parseCommandLineSwitches
     ${IfNot} $R1 == ""
         StrCpy $Indexer_State $R1
     ${ElseIf} $Indexer_State == ""
-        StrCpy $Indexer_State "splunk-hec.loc.adobe.net"
+        StrCpy $Indexer_State "indexer"
     ${EndIf}
 
 FunctionEnd

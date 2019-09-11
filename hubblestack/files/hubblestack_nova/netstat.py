@@ -1,11 +1,6 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 HubbleStack Nova module for auditing open ports.
-
-:maintainer: HubbleStack / basepi
-:maturity: 2016.7.0
-:platform: Unix
-:requires: SaltStack
 
 Sample data for the netstat whitelist:
 
@@ -18,7 +13,7 @@ Sample data for the netstat whitelist:
             address:
               - 127.0.0.1:80
               - 0.0.0.0:80
-'''
+"""
 from __future__ import absolute_import
 
 import copy
@@ -36,10 +31,10 @@ def __virtual__():
     return False, 'No network.netstat function found'
 
 
-def audit(data_list, tags, debug=True, **kwargs):
-    '''
+def audit(data_list, tags, labels, debug=True, **kwargs):
+    """
     Run the network.netstat command
-    '''
+    """
     ret = {'Success': [], 'Failure': []}
 
     __tags__ = {}

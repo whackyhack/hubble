@@ -1,15 +1,10 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 HubbleStack Nova plugin for using grep to verify settings in files.
 
 Supports both blacklisting and whitelisting patterns. Blacklisted patterns must
 not be found in the specified file. Whitelisted patterns must be found in the
 specified file.
-
-:maintainer: HubbleStack / basepi
-:maturity: 2016.7.0
-:platform: All
-:requires: SaltStack
 
 This audit module requires yaml data to execute. It will search the local
 directory for any .yaml files, and if it finds a top-level 'grep' key, it will
@@ -42,6 +37,9 @@ grep:
       description: |
         The /tmp directory is intended to be world-writable, which presents a risk
         of resource exhaustion if it is not bound to a separate partition.
+      labels:
+        - critical
+        - raiseticket
       alert: email
       trigger: state
 
@@ -52,35 +50,57 @@ the file is missing, then it will be considered a match (success for whitelist,
 failure for blacklist). If it's set to False and the file is missing, then it
 will be considered a non-match (success for blacklist, failure for whitelist).
 If the file exists, this setting is ignored.
-'''
+"""
 from __future__ import absolute_import
 import logging
 
 import fnmatch
-import yaml
 import os
 import copy
 import salt.utils
+import salt.utils.platform
 import re
 
 from distutils.version import LooseVersion
+from salt.exceptions import CommandExecutionError
 
 log = logging.getLogger(__name__)
 
 
 def __virtual__():
-    if salt.utils.is_windows():
+    if salt.utils.platform.is_windows():
         return False, 'This audit module only runs on linux'
     return True
 
+def apply_labels(__data__, labels):
+    """
+    Filters out the tests whose label doesn't match the labels given when running audit and returns a new data structure with only labelled tests.
+    """
+    labelled_data = {}
+    if labels:
+        labelled_data['grep'] = {}
+        for topkey in ('blacklist', 'whitelist'):
+            if topkey in __data__.get('grep', {}):
+                labelled_test_cases=[]
+                for test_case in __data__['grep'].get(topkey, []):
+                    # each test case is a dictionary with just one key-val pair. key=test name, val=test data, description etc
+                    if isinstance(test_case, dict) and test_case:
+                        test_case_body = test_case.get(next(iter(test_case)))
+                        if set(labels).issubset(set(test_case_body.get('labels',[]))):
+                            labelled_test_cases.append(test_case)
+                labelled_data['grep'][topkey]=labelled_test_cases
+    else:
+        labelled_data = __data__
+    return labelled_data
 
-def audit(data_list, tags, debug=False, **kwargs):
-    '''
+def audit(data_list, tags, labels, debug=False, **kwargs):
+    """
     Run the grep audits contained in the YAML files processed by __virtual__
-    '''
+    """
     __data__ = {}
     for profile, data in data_list:
         _merge_yaml(__data__, data, profile)
+    __data__ = apply_labels(__data__, labels)
     __tags__ = _get_tags(__data__)
 
     if debug:
@@ -104,6 +124,8 @@ def audit(data_list, tags, debug=False, **kwargs):
                               .format(tag, name))
                     tag_data = copy.deepcopy(tag_data)
                     tag_data['error'] = 'No pattern found'.format(mod)
+                    tag_data['failure_reason'] = 'No pattern found for the test case.' \
+                                                 ' Seems like a bug in hubble profile.'
                     ret['Failure'].append(tag_data)
                     continue
 
@@ -116,29 +138,53 @@ def audit(data_list, tags, debug=False, **kwargs):
                                  *grep_args).get('stdout')
 
                 found = False
+                failure_reason = ''
                 if grep_ret:
                     found = True
+                    failure_reason = "Found the blacklisted string '{0}' in file '{1}'." \
+                                     " The file should not contain any string like '{2}'" \
+                                     .format(grep_ret,
+                                             name,
+                                             tag_data['pattern'])
                 if 'match_output' in tag_data:
                     if not tag_data.get('match_output_regex'):
                         if tag_data['match_output'] not in grep_ret:
                             found = False
+                            failure_reason = "In file '{0}', could not find text pattern " \
+                                             "'{1}' in '{2}'".format(name,
+                                                                     tag_data['match_output'],
+                                                                     grep_ret)
                     else:  # match with regex
                         if tag_data.get('match_output_multiline', True):
                             if not re.search(tag_data['match_output'], grep_ret, re.MULTILINE):
                                 found = False
+                                failure_reason = "In file '{0}', could not find multiline" \
+                                                 " regex pattern '{1}' in '{2}'" \
+                                                 .format(name,
+                                                         tag_data['match_output'],
+                                                         grep_ret)
                         else:
                             if not re.search(tag_data['match_output'], grep_ret):
                                 found = False
+                                failure_reason = "In file '{0}', could not find regex " \
+                                                 "pattern '{1}' in '{2}'" \
+                                                 .format(name,
+                                                         tag_data['match_output'],
+                                                         grep_ret)
 
                 if not os.path.exists(name) and 'match_on_file_missing' in tag_data:
                     if tag_data['match_on_file_missing']:
                         found = True
+                        failure_reason = "Found the file '{0}'. This blaclisted file " \
+                                         "should not exist.".format(name)
                     else:
                         found = False
+                        failure_reason = "Could not find the required file '{0}'".format(name)
 
                 # Blacklisted pattern (must not be found)
                 if audittype == 'blacklist':
                     if found:
+                        tag_data['failure_reason'] = failure_reason
                         ret['Failure'].append(tag_data)
                     else:
                         ret['Success'].append(tag_data)
@@ -148,15 +194,16 @@ def audit(data_list, tags, debug=False, **kwargs):
                     if found:
                         ret['Success'].append(tag_data)
                     else:
+                        tag_data['failure_reason'] = failure_reason
                         ret['Failure'].append(tag_data)
 
     return ret
 
 
 def _merge_yaml(ret, data, profile=None):
-    '''
+    """
     Merge two yaml dicts together at the grep:blacklist and grep:whitelist level
-    '''
+    """
     if 'grep' not in ret:
         ret['grep'] = {}
     for topkey in ('blacklist', 'whitelist'):
@@ -171,9 +218,9 @@ def _merge_yaml(ret, data, profile=None):
 
 
 def _get_tags(data):
-    '''
+    """
     Retrieve all the tags for this distro from the yaml
-    '''
+    """
     ret = {}
     distro = __grains__.get('osfinger')
     for toplist, toplevel in data.get('grep', {}).iteritems():
@@ -228,7 +275,7 @@ def _get_tags(data):
 def _grep(path,
           pattern,
           *args):
-    '''
+    """
     Grep for a string in the specified file
 
     .. note::
@@ -263,7 +310,7 @@ def _grep(path,
         salt '*' file.grep /etc/sysconfig/network-scripts/ifcfg-eth0 ipaddr -- -i
         salt '*' file.grep /etc/sysconfig/network-scripts/ifcfg-eth0 ipaddr -- -i -B2
         salt '*' file.grep "/etc/sysconfig/network-scripts/*" ipaddr -- -i -l
-    '''
+    """
     path = os.path.expanduser(path)
 
     if args:

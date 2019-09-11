@@ -1,11 +1,6 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 HubbleStack Nova module for using sysctl to verify sysctl parameter.
-
-:maintainer: HubbleStack / avb76
-:maturity: 2016.7.0
-:platform: Linux
-:requires: SaltStack
 
 This audit module requires yaml data to execute. It will search the local
 directory for any .yaml files, and if it finds a top-level 'sysctl' key, it will
@@ -25,18 +20,19 @@ sysctl:
             tag: 'CIS-1.6.2'
             match_output: '2'
     description: 'Enable Randomized Virtual Memory Region Placement (Scored)'
+    labels:
+      - critical
     alert: email
     trigger: state
-'''
+"""
 
 from __future__ import absolute_import
 import logging
 
 import fnmatch
-import yaml
-import os
 import copy
 import salt.utils
+import salt.utils.platform
 
 from distutils.version import LooseVersion
 
@@ -44,18 +40,36 @@ log = logging.getLogger(__name__)
 
 
 def __virtual__():
-    if salt.utils.is_windows():
+    if salt.utils.platform.is_windows():
         return False, 'This audit module only runs on linux'
     return True
 
+def apply_labels(__data__, labels):
+    """
+    Filters out the tests whose label doesn't match the labels given when running audit and returns a new data structure with only labelled tests.
+    """
+    ret={}
+    if labels:
+        labelled_test_cases=[]
+        for test_case in __data__.get('sysctl', []):
+            # each test case is a dictionary with just one key-val pair. key=test name, val=test data, description etc
+            if isinstance(test_case, dict) and test_case:
+                test_case_body = test_case.get(next(iter(test_case)))
+                if test_case_body.get('labels') and set(labels).issubset(set(test_case_body.get('labels',[]))):
+                    labelled_test_cases.append(test_case)
+        ret['sysctl']=labelled_test_cases
+    else:
+        ret=__data__
+    return ret
 
-def audit(data_list, tags, debug=False, **kwargs):
-    '''
+def audit(data_list, tags, labels, debug=False, **kwargs):
+    """
     Run the sysctl audits contained in the YAML files processed by __virtual__
-    '''
+    """
     __data__ = {}
     for profile, data in data_list:
         _merge_yaml(__data__, data, profile)
+    __data__ = apply_labels(__data__, labels)
     __tags__ = _get_tags(__data__)
 
     if debug:
@@ -79,9 +93,17 @@ def audit(data_list, tags, debug=False, **kwargs):
                 salt_ret = __salt__['sysctl.get'](name)
                 if not salt_ret:
                     passed = False
+                    tag_data['failure_reason'] = "Could not find attribute '{0}' in" \
+                                                 " the kernel".format(name)
                 if str(salt_ret).startswith('error'):
                     passed = False
+                    tag_data['failure_reason'] = "An error occured while reading the" \
+                                                 " value of kernel attribute '{0}'" \
+                                                 .format(name)
                 if str(salt_ret) != str(match_output):
+                    tag_data['failure_reason'] = "Current value of kernel attribute " \
+                                                 "'{0}' is '{1}'. It should be set to '{2}'" \
+                                                 .format(name, salt_ret, match_output)
                     passed = False
                 if passed:
                     ret['Success'].append(tag_data)
@@ -92,9 +114,9 @@ def audit(data_list, tags, debug=False, **kwargs):
 
 
 def _merge_yaml(ret, data, profile=None):
-    '''
+    """
     Merge two yaml dicts together
-    '''
+    """
     if 'sysctl' not in ret:
         ret['sysctl'] = []
     for key, val in data.get('sysctl', {}).iteritems():
@@ -105,9 +127,9 @@ def _merge_yaml(ret, data, profile=None):
 
 
 def _get_tags(data):
-    '''
+    """
     Retrieve all the tags for this distro from the yaml
-    '''
+    """
     ret = {}
     distro = __grains__.get('osfinger')
     for audit_dict in data.get('sysctl', []):

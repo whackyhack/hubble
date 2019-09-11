@@ -1,13 +1,7 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 Hubble Nova plugin for FreeBSD pkgng audit
-
-:maintainer: HubbleStack / cedwards
-:maturity: 2016.7.0
-:platform: FreeBSD
-:requires: SaltStack
-
-'''
+"""
 from __future__ import absolute_import
 import logging
 
@@ -20,10 +14,10 @@ def __virtual__():
     return True
 
 
-def audit(data_list, tags, debug=False, **kwargs):
-    '''
+def audit(data_list, tags, labels, debug=False, **kwargs):
+    """
     Run the pkg.audit command
-    '''
+    """
     ret = {'Success': [], 'Failure': []}
 
     __tags__ = []

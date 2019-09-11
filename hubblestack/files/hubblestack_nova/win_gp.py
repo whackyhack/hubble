@@ -1,18 +1,13 @@
 # -*- encoding: utf-8 -*-
-'''
-
-:maintainer: HubbleStack
-:maturity: 2016.7.0
-:platform: Windows
-:requires: SaltStack
-
-'''
+"""
+"""
 
 from __future__ import absolute_import
 import copy
 import fnmatch
 import logging
 import salt.utils
+import salt.utils.platform
 
 
 log = logging.getLogger(__name__)
@@ -20,21 +15,43 @@ __virtualname__ = 'win_gp'
 
 
 def __virtual__():
-    if not salt.utils.is_windows():
+    if not salt.utils.platform.is_windows():
         return False, 'This audit module only runs on windows'
     return True
 
+def apply_labels(__data__, labels):
+    """
+    Filters out the tests whose label doesn't match the labels given when running audit and returns a new data structure with only labelled tests.
+    """
+    labelled_data = {}
+    if labels:
+        labelled_data[__virtualname__] = {}
+        for topkey in ('blacklist', 'whitelist'):
+            if topkey in __data__.get(__virtualname__, {}):
+                labelled_test_cases=[]
+                for test_case in __data__[__virtualname__].get(topkey, []):
+                    # each test case is a dictionary with just one key-val pair. key=test name, val=test data, description etc
+                    if isinstance(test_case, dict) and test_case:
+                        test_case_body = test_case.get(next(iter(test_case)))
+                        if set(labels).issubset(set(test_case_body.get('labels',[]))):
+                            labelled_test_cases.append(test_case)
+                labelled_data[__virtualname__][topkey]=labelled_test_cases
+    else:
+        labelled_data = __data__
+    return labelled_data
 
-def audit(data_list, tags, debug=False, **kwargs):
-    '''
+def audit(data_list, tags, labels, debug=False, **kwargs):
+    """
     Runs auditpol on the local machine and audits the return data
     with the CIS yaml processed by __virtual__
-    '''
+    """
     __data__ = {}
     __gpdata__ = _get_gp_templates()
     for profile, data in data_list:
         _merge_yaml(__data__, data, profile)
+    __data__ = apply_labels(__data__, labels)
     __tags__ = _get_tags(__data__)
+    __is_domain_controller__ = _is_domain_controller()
     if debug:
         log.debug('firewall audit __data__:')
         log.debug(__data__)
@@ -50,7 +67,12 @@ def audit(data_list, tags, debug=False, **kwargs):
                     continue
                 name = tag_data['name']
                 audit_type = tag_data['type']
-                match_output = tag_data['match_output'].lower()
+                run_on_dc = tag_data.get('run_on_dc', True)
+                run_on_member_server = tag_data.get('run_on_member_server', True)
+                if __is_domain_controller__ and not run_on_dc:
+                    continue
+                if not __is_domain_controller__ and not run_on_member_server:
+                    continue
 
                 # Blacklisted audit (do not include)
                 if 'blacklist' in audit_type:
@@ -62,25 +84,18 @@ def audit(data_list, tags, debug=False, **kwargs):
                 # Whitelisted audit (must include)
                 if 'whitelist' in audit_type:
                     if name in __gpdata__:
-                        audit_value = True
-                        tag_data['found_value'] = audit_value
-                        secret = _translate_value_type(audit_value, tag_data['value_type'], match_output)
-                        if secret:
-                            ret['Success'].append(tag_data)
-                        else:
-                            ret['Failure'].append(tag_data)
+                        ret['Success'].append(tag_data)
                     else:
-                        log.debug('When trying to audit the firewall section,'
-                                  ' the yaml contained incorrect data for the key')
+                        ret['Failure'].append(tag_data)
 
     return ret
 
 
 def _merge_yaml(ret, data, profile=None):
-    '''
+    """
     Merge two yaml dicts together at the secedit:blacklist and
     secedit:whitelist level
-    '''
+    """
     if __virtualname__ not in ret:
         ret[__virtualname__] = {}
     for topkey in ('blacklist', 'whitelist'):
@@ -95,11 +110,11 @@ def _merge_yaml(ret, data, profile=None):
 
 
 def _get_tags(data):
-    '''
+    """
     Retrieve all the tags for this distro from the yaml
-    '''
+    """
     ret = {}
-    distro = __grains__.get('osfullname')
+    distro = __grains__.get('osfinger')
     for toplist, toplevel in data.get(__virtualname__, {}).iteritems():
         # secedit:whitelist
         for audit_dict in toplevel:
@@ -139,7 +154,7 @@ def _get_tags(data):
                             ret[tag] = []
                         formatted_data = {'name': name,
                                           'tag': tag,
-                                          'module': 'win_auditpol',
+                                          'module': 'win_gp',
                                           'type': toplist}
                         formatted_data.update(tag_data)
                         formatted_data.update(audit_data)
@@ -151,12 +166,13 @@ def _get_tags(data):
 def _get_gp_templates():
     domain_check = __salt__['system.get_domain_workgroup']()
     if 'Workgroup' in domain_check:
-        return False
-    else:
-        domain_check = domain_check['Domain']
+        return []
+
     list = __salt__['cmd.run']('Get-ChildItem //{0}/SYSVOL/{0}/Policies/PolicyDefinitions | Format-List '
-                               '-Property Name, SID'.format(domain_check), shell='powershell', python_shell=True)
+                               '-Property Name, SID'.format(domain_check['Domain']),
+                               shell='powershell', python_shell=True)
     return list
+
 
 def _translate_value_type(current, value, evaluator):
     if 'equal' in value:
@@ -164,3 +180,13 @@ def _translate_value_type(current, value, evaluator):
             return True
         else:
             return False
+
+
+def _is_domain_controller():
+    ret = __salt__['reg.read_value'](hive="HKLM",
+                                     key=r"SYSTEM\CurrentControlSet\Control\ProductOptions",
+                                     vname="ProductType")
+    if ret['vdata'] == "LanmanNT":
+        return True
+    else:
+        return False

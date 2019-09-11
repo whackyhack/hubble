@@ -7,19 +7,19 @@ if not distro:
     distro, version, _ = platform.linux_distribution(supported_dists=['system'])
 
 # Default to cent7
-data_files = [('/usr/lib/systemd/system', ['pkg/hubble.service']),
-              ('/etc/hubble', ['conf/hubble']),]
+data_files = [('/usr/lib/systemd/system', ['pkg/source/hubble.service']),
+              ('/etc/hubble', ['conf/hubble']), ]
 
 if distro == 'redhat' or distro == 'centos':
     if version.startswith('6'):
         data_files = [('/etc/init.d', ['pkg/hubble']),
-                      ('/etc/hubble', ['conf/hubble']),]
+                      ('/etc/hubble', ['conf/hubble']), ]
     elif version.startswith('7'):
-        data_files = [('/usr/lib/systemd/system', ['pkg/hubble.service']),
-                      ('/etc/hubble', ['conf/hubble']),]
+        data_files = [('/usr/lib/systemd/system', ['pkg/source/hubble.service']),
+                      ('/etc/hubble', ['conf/hubble']), ]
 elif distro == 'Amazon Linux AMI':
     data_files = [('/etc/init.d', ['pkg/hubble']),
-                  ('/etc/hubble', ['conf/hubble']),]
+                  ('/etc/hubble', ['conf/hubble']), ]
 
 with open('hubblestack/__init__.py', 'r') as fd:
     version = re.search(r'^__version__\s*=\s*[\'"]([^\'"]*)[\'"]',
@@ -41,10 +41,16 @@ setup(
             'hubble = hubblestack.daemon:run',
         ],
     },
+    tests_require=[
+        'mock',
+    ],
     install_requires=[
-        'salt-ssh >= 2015.8.0',
-        'gitpython',
+        'salt-ssh >= 2019.2.0',
+        'croniter',
         'pyinotify',
+        'vulners == 1.3.0',
+        'azure',
+        'ntplib',
     ],
     data_files=data_files,
     options={
@@ -73,5 +79,5 @@ setup(
         'Topic :: System :: Logging',
         'Topic :: System :: Monitoring',
         'Topic :: System :: Systems Administration',
-        ],
+    ],
 )

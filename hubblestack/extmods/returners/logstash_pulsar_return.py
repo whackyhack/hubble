@@ -1,10 +1,6 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 HubbleStack Pulsar-to-Logstash (http input) returner
-
-:maintainer: HubbleStack
-:platform: All
-:requires: HubbleStack
 
 Deliver HubbleStack Pulsar event data into Logstash using the HTTP input
 plugin. Required config/pillar settings:
@@ -25,14 +21,12 @@ plugin. Required config/pillar settings:
             custom_fields:
               - site
               - product_group
-'''
+"""
 
 import os
-import time
 import json
 import requests
 from collections import defaultdict
-from cloud_details import get_cloud_details
 from requests.auth import HTTPBasicAuth
 
 
@@ -45,14 +39,15 @@ def _dedupList(l):
 
 
 def returner(ret):
-    '''
-    '''
+    """
+    """
     if isinstance(ret, dict) and not ret.get('return'):
         return
 
     opts_list = _get_options()
 
-    clouds = get_cloud_details()
+    # Get cloud details
+    cloud_details = __grains__.get('cloud_details', {})
 
     for opts in opts_list:
         proxy = opts['proxy']
@@ -68,7 +63,6 @@ def returner(ret):
         minion_id = __opts__['id']
         fqdn = __grains__['fqdn']
         fqdn = fqdn if fqdn else minion_id
-        master = __grains__['master']
         try:
             fqdn_ip4 = __grains__['fqdn_ip4'][0]
         except IndexError:
@@ -122,6 +116,8 @@ def returner(ret):
                 event['object_path'] = alert['path']
                 event['file_name'] = alert['name']
                 event['file_path'] = alert['tag']
+                if 'contents' in alert:
+                    event['contents'] = alert['contents']
 
                 if alert['stats']:  # Gather more data if the change wasn't a delete
                     stats = alert['stats']
@@ -175,13 +171,11 @@ def returner(ret):
                 # TODO: Should we be reporting 'EntryType' or 'TimeGenerated?
                 #   EntryType reports whether attempt to change was successful.
 
-            event.update({'master': master})
             event.update({'minion_id': minion_id})
             event.update({'dest_host': fqdn})
             event.update({'dest_ip': fqdn_ip4})
 
-            for cloud in clouds:
-                event.update(cloud)
+            event.update(cloud_details)
 
             payload.update({'host': fqdn})
             payload.update({'index': opts['index']})

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-'''
+"""
 The backend for serving files from the Azure blob storage service.
 
 To enable, add ``azurefs`` to the :conf_master:`fileserver_backend` option in
@@ -11,8 +11,9 @@ the Master config file.
       - azurefs
 
 Starting in Oxygen, this fileserver requires the standalone Azure Storage SDK
-for Python. Theoretically any version >= v0.20.0 should work, but it was
-developed against the v0.33.0 version.
+for Python. Due to recent changes in the structure of the azure storage SDK,
+we now require the azure base library at 3.0 or higher, with the azure-storage-blob
+and azure-storage-common libraries.
 
 Each storage container will be mapped to an environment. By default, containers
 will be mapped to the ``base`` environment. You can override this behavior with
@@ -24,7 +25,7 @@ searched in the order they are defined.
 
 You must have either an account_key or a sas_token defined for each container,
 if it is private. If you use a sas_token, it must have READ and LIST
-permissions.
+permissions. Proxy can also be provided in the configuration.
 
 .. code-block:: yaml
 
@@ -32,6 +33,7 @@ permissions.
       - account_name: my_storage
         account_key: 'fNH9cRp0+qVIVYZ+5rnZAhHc9ycOUcJnHtzpfOr0W0sxrtL2KVLuMe1xDfLwmfed+JJInZaEdWVCPHD4d/oqeA=='
         container_name: my_container
+        proxy: 10.10.10.10:8080
       - account_name: my_storage
         sas_token: 'ss=b&sp=&sv=2015-07-08&sig=cohxXabx8FQdXsSEHyUXMjsSfNH2tZ2OB97Ou44pkRE%3D&srt=co&se=2017-04-18T21%3A38%3A01Z'
         container_name: my_dev_container
@@ -42,7 +44,7 @@ permissions.
 .. note::
 
     Do not include the leading ? for sas_token if generated from the web
-'''
+"""
 
 # Import python libs
 from __future__ import absolute_import
@@ -59,9 +61,8 @@ import salt.fileserver
 import salt.utils
 
 try:
-    import azure.storage
-    if LooseVersion(azure.storage.__version__) < LooseVersion('0.20.0'):
-        raise ImportError('azure.storage.__version__ must be >= 0.20.0')
+    import azure.storage.common
+    import azure.storage.blob
     HAS_AZURE = True
 except ImportError:
     HAS_AZURE = False
@@ -76,9 +77,9 @@ log = logging.getLogger()
 
 
 def __virtual__():
-    '''
-    Only load if defined in fileserver_backend and azure.storage is present
-    '''
+    """
+    Only load if defined in fileserver_backend and azure.storage.common is present
+    """
     if __virtualname__ not in __opts__['fileserver_backend']:
         return False
 
@@ -95,9 +96,9 @@ def __virtual__():
 
 
 def find_file(path, saltenv='base', **kwargs):
-    '''
+    """
     Search the environment for the relative path
-    '''
+    """
     fnd = {'path': '',
            'rel': ''}
     for container in __opts__.get('azurefs', []):
@@ -129,10 +130,10 @@ def find_file(path, saltenv='base', **kwargs):
 
 
 def envs():
-    '''
+    """
     Each container configuration can have an environment setting, or defaults
     to base
-    '''
+    """
     saltenvs = []
     for container in __opts__.get('azurefs', []):
         saltenvs.append(container.get('saltenv', 'base'))
@@ -141,9 +142,9 @@ def envs():
 
 
 def serve_file(load, fnd):
-    '''
+    """
     Return a chunk from a file based on the data received
-    '''
+    """
     ret = {'data': '',
            'dest': ''}
     required_load_keys = set(['path', 'loc', 'saltenv'])
@@ -160,7 +161,7 @@ def serve_file(load, fnd):
     ret['dest'] = fnd['rel']
     gzip = load.get('gzip', None)
     fpath = os.path.normpath(fnd['path'])
-    with salt.utils.fopen(fpath, 'rb') as fp_:
+    with salt.utils.files.fopen(fpath, 'rb') as fp_:
         fp_.seek(load['loc'])
         data = fp_.read(__opts__['file_buffer_size'])
         if data and six.PY3 and not salt.utils.is_bin_file(fpath):
@@ -173,7 +174,7 @@ def serve_file(load, fnd):
 
 
 def update():
-    '''
+    """
     Update caches of the storage containers.
 
     Compares the md5 of the files on disk to the md5 of the blobs in the
@@ -181,7 +182,7 @@ def update():
 
     Also processes deletions by walking the container caches and comparing
     with the list of blobs in the container
-    '''
+    """
     for container in __opts__['azurefs']:
         path = _get_container_path(container)
         try:
@@ -199,6 +200,32 @@ def update():
             blob_list = blob_service.list_blobs(name)
         except Exception as exc:
             log.exception('Error occurred fetching blob list for azurefs')
+
+            if not __opts__['delete_inaccessible_azure_containers'] \
+               or ( not "<class 'azure.common.AzureHttpError'>" in str(type(exc)) \
+                    and \
+                    not "<class 'azure.common.AzureMissingResourceHttpError'>" in str(type(exc))
+                    ):
+                continue
+
+            if '<Code>AuthenticationFailed</Code>' in str(exc) \
+                or \
+                '<Code>AuthorizationPermissionMismatch</Code>' in str(exc) \
+                or \
+                '<Code>ContainerNotFound</Code>' in str(exc):
+
+                log.debug('Could not connect to azure container "{0}"'.format(name))
+                container_cache_folder = _get_container_path(container) 
+                log.debug('Trying to delete the cache of container "{0}"'.format(name))
+                try:
+                    container_cachedir = os.path.join(__opts__['cachedir'], 'azurefs',container_cache_folder)
+                    container_filelist = container_cachedir + '.list'
+                    if os.path.exists(container_cachedir):
+                        shutil.rmtree(container_cachedir)
+                    if os.path.exists(container_filelist):
+                        os.remove(container_filelist)
+                except Exception:
+                    log.exception('Problem occurred trying to invalidate cache for container "{0}"'.format(name))
             continue
 
         # Walk the cache directory searching for deletions
@@ -223,7 +250,7 @@ def update():
             if os.path.exists(fname):
                 # File exists, check the hashes
                 source_md5 = blob.properties.content_settings.content_md5
-                local_md5 = base64.b64encode(salt.utils.get_hash(fname, 'md5').decode('hex'))
+                local_md5 = base64.b64encode(salt.utils.hashutils.get_hash(fname, 'md5').decode('hex'))
                 if local_md5 != source_md5:
                     update = True
             else:
@@ -235,13 +262,32 @@ def update():
                 # Lock writes
                 lk_fn = fname + '.lk'
                 salt.fileserver.wait_lock(lk_fn, fname)
-                with salt.utils.fopen(lk_fn, 'w+') as fp_:
+                with salt.utils.files.fopen(lk_fn, 'w+') as fp_:
                     fp_.write('')
 
                 try:
                     blob_service.get_blob_to_path(name, blob.name, fname)
                 except Exception as exc:
                     log.exception('Error occurred fetching blob from azurefs')
+
+                    if not __opts__['delete_inaccessible_azure_containers'] \
+                       or ( not "<class 'azure.common.AzureHttpError'>" in str(type(exc)) and \
+                            not "<class 'azure.common.AzureMissingResourceHttpError'>" in str(type(exc)) 
+                            ):
+                        continue
+
+                    if '<Code>AuthenticationFailed</Code>' in str(exc) \
+                        or \
+                       '<Code>AuthorizationPermissionMismatch</Code>' in str(exc) \
+                        or \
+                       '<Code>ContainerNotFound</Code>' in str(exc):
+
+                        try:
+                            if os.path.exists(fname):
+                                os.remove(fname)
+                                os.unlink(lk_fn)
+                        except Exception:
+                            log.exception('Problem occurred trying to delete the corrupt file "{0}"'.format(fname))
                     continue
 
                 # Unlock writes
@@ -254,47 +300,54 @@ def update():
         container_list = path + '.list'
         lk_fn = container_list + '.lk'
         salt.fileserver.wait_lock(lk_fn, container_list)
-        with salt.utils.fopen(lk_fn, 'w+') as fp_:
+        with salt.utils.files.fopen(lk_fn, 'w+') as fp_:
             fp_.write('')
-        with salt.utils.fopen(container_list, 'w') as fp_:
+        with salt.utils.files.fopen(container_list, 'w') as fp_:
             fp_.write(json.dumps(blob_names))
         try:
             os.unlink(lk_fn)
         except Exception:
             pass
+        try:
+            #Do not move this statement above 'delete_inaccessible_azure_containers' logic.
+            hash_cachedir = os.path.join(__opts__['cachedir'], 'azurefs', 'hashes')
+            if os.path.exists(hash_cachedir):
+                shutil.rmtree(hash_cachedir)
+        except Exception:
+            log.exception('Problem occurred trying to invalidate hash cach for azurefs')
 
 
 def file_hash(load, fnd):
-    '''
+    """
     Return a file hash based on the hash type set in the master config
-    '''
+    """
     if not all(x in load for x in ('path', 'saltenv')):
         return '', None
     ret = {'hash_type': __opts__['hash_type']}
     relpath = fnd['rel']
     path = fnd['path']
     hash_cachedir = os.path.join(__opts__['cachedir'], 'azurefs', 'hashes')
-    hashdest = salt.utils.path_join(hash_cachedir,
+    hashdest = salt.utils.path.join(hash_cachedir,
                                     load['saltenv'],
                                     '{0}.hash.{1}'.format(relpath,
                                                           __opts__['hash_type']))
     if not os.path.isfile(hashdest):
         if not os.path.exists(os.path.dirname(hashdest)):
             os.makedirs(os.path.dirname(hashdest))
-        ret['hsum'] = salt.utils.get_hash(path, __opts__['hash_type'])
-        with salt.utils.fopen(hashdest, 'w+') as fp_:
+        ret['hsum'] = salt.utils.hashutils.get_hash(path, __opts__['hash_type'])
+        with salt.utils.files.fopen(hashdest, 'w+') as fp_:
             fp_.write(ret['hsum'])
         return ret
     else:
-        with salt.utils.fopen(hashdest, 'rb') as fp_:
+        with salt.utils.files.fopen(hashdest, 'rb') as fp_:
             ret['hsum'] = fp_.read()
         return ret
 
 
 def file_list(load):
-    '''
+    """
     Return a list of all files in a specified environment
-    '''
+    """
     ret = set()
     try:
         for container in __opts__['azurefs']:
@@ -305,7 +358,7 @@ def file_list(load):
             salt.fileserver.wait_lock(lk, container_list, 5)
             if not os.path.exists(container_list):
                 continue
-            with salt.utils.fopen(container_list, 'r') as fp_:
+            with salt.utils.files.fopen(container_list, 'r') as fp_:
                 ret.update(set(json.load(fp_)))
     except Exception as exc:
         log.error('azurefs: an error ocurred retrieving file lists. '
@@ -316,9 +369,9 @@ def file_list(load):
 
 
 def dir_list(load):
-    '''
+    """
     Return a list of all directories in a specified environment
-    '''
+    """
     ret = set()
     files = file_list(load)
     for f in files:
@@ -331,12 +384,12 @@ def dir_list(load):
 
 
 def _get_container_path(container):
-    '''
+    """
     Get the cache path for the container in question
 
     Cache paths are generate by combining the account name, container name,
     and saltenv, separated by underscores
-    '''
+    """
     root = os.path.join(__opts__['cachedir'], 'azurefs')
     container_dir = '{0}_{1}_{2}'.format(container.get('account_name', ''),
                                          container.get('container_name', ''),
@@ -345,25 +398,27 @@ def _get_container_path(container):
 
 
 def _get_container_service(container):
-    '''
+    """
     Get the azure block blob service for the container in question
 
     Try account_key, sas_token, and no auth in that order
-    '''
+    """
     if 'account_key' in container:
-        account = azure.storage.CloudStorageAccount(container['account_name'], account_key=container['account_key'])
+        account = azure.storage.common.CloudStorageAccount(container['account_name'], account_key=container['account_key'])
     elif 'sas_token' in container:
-        account = azure.storage.CloudStorageAccount(container['account_name'], sas_token=container['sas_token'])
+        account = azure.storage.common.CloudStorageAccount(container['account_name'], sas_token=container['sas_token'])
     else:
-        account = azure.storage.CloudStorageAccount(container['account_name'])
+        account = azure.storage.common.CloudStorageAccount(container['account_name'])
     blob_service = account.create_block_blob_service()
+    if 'proxy' in container and len(container['proxy'].split(':')) == 2:
+        blob_service.set_proxy(container['proxy'].split(':')[0], container['proxy'].split(':')[1])
     return blob_service
 
 
 def _validate_config():
-    '''
+    """
     Validate azurefs config, return False if it doesn't validate
-    '''
+    """
     if not isinstance(__opts__['azurefs'], list):
         log.error('azurefs configuration is not formed as a list, skipping azurefs')
         return False

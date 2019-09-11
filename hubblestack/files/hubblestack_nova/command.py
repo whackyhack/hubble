@@ -1,5 +1,5 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 Hubble Nova plugin for running arbitrary commands and checking the output of
 those commands
 
@@ -7,11 +7,6 @@ This module is deprecated, and must be explicitly enabled in pillar/minion
 config via the hubblestack:nova:enable_command_module (should be set to True
 to enable this module). This allows nova to run arbitrary commands via yaml
 profiles.
-
-:maintainer: HubbleStack / basepi
-:maturity: 2016.7.0
-:platform: All
-:requires: SaltStack
 
 Sample YAML data, with inline comments:
 
@@ -67,14 +62,11 @@ command:
         aggregation: 'and'
     # Description will be output with the results
     description: '/home should be nodev'
-'''
+"""
 from __future__ import absolute_import
 import logging
 
 import fnmatch
-import yaml
-import os
-import copy
 import re
 import salt.utils
 
@@ -85,13 +77,13 @@ def __virtual__():
     return True
 
 
-def audit(data_list, tags, **kwargs):
-    '''
+def audit(data_list, tags, labels, **kwargs):
+    """
     Run the command audits contained in the data_list
-    '''
+    """
     # Consume any module_params from kwargs (Setting False as a fallback)
-    debug = kwargs.get('nova_debug',False)
-    cmd_raw = kwargs.get('cmd_raw',False)
+    debug = kwargs.get('nova_debug', False)
+    cmd_raw = kwargs.get('cmd_raw', False)
 
     __data__ = {}
     for profile, data in data_list:
@@ -109,8 +101,8 @@ def audit(data_list, tags, **kwargs):
     if __tags__ and not __salt__['config.get']('hubblestack:nova:enable_command_module',
                                                False):
         ret['Errors'] = ['command module has not been explicitly enabled in '
-                        'config. Please set hubblestack:nova:enable_command_module '
-                        'to True in pillar or minion config to allow this module.']
+                         'config. Please set hubblestack:nova:enable_command_module '
+                         'to True in pillar or minion config to allow this module.']
         return ret
 
     for tag in __tags__:
@@ -175,9 +167,9 @@ def audit(data_list, tags, **kwargs):
 
 
 def _merge_yaml(ret, data, profile=None):
-    '''
+    """
     Merge two yaml dicts together at the command level
-    '''
+    """
     if 'command' not in ret:
         ret['command'] = []
     if 'command' in data:
@@ -189,9 +181,9 @@ def _merge_yaml(ret, data, profile=None):
 
 
 def _get_tags(data):
-    '''
+    """
     Retrieve all the tags for this distro from the yaml
-    '''
+    """
     ret = {}
     distro = __grains__.get('osfinger')
     for audit_dict in data.get('command', []):

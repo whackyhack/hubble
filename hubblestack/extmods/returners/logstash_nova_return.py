@@ -1,10 +1,6 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 HubbleStack Nova-to-Logstash (http input) returner
-
-:maintainer: HubbleStack
-:platform: All
-:requires: HubbleStack
 
 Deliver HubbleStack Nova data into Logstash using the HTTP input
 plugin. Required config/pillar settings:
@@ -25,21 +21,21 @@ plugin. Required config/pillar settings:
             custom_fields:
               - site
               - product_group
-'''
+"""
 
 import json
-import time
 import socket
 import requests
-from cloud_details import get_cloud_details
 from requests.auth import HTTPBasicAuth
 
+
 def returner(ret):
-    '''
-    '''
+    """
+    """
     opts_list = _get_options()
 
-    clouds = get_cloud_details()
+    # Get cloud details
+    cloud_details = __grains__.get('cloud_details', {})
 
     for opts in opts_list:
         proxy = opts['proxy']
@@ -57,7 +53,6 @@ def returner(ret):
         fqdn = __grains__['fqdn']
         # Sometimes fqdn is blank. If it is, replace it with minion_id
         fqdn = fqdn if fqdn else minion_id
-        master = __grains__['master']
         try:
             fqdn_ip4 = __grains__['fqdn_ip4'][0]
         except IndexError:
@@ -67,11 +62,6 @@ def returner(ret):
                 if ip4_addr and not ip4_addr.startswith('127.'):
                     fqdn_ip4 = ip4_addr
                     break
-
-        if __grains__['master']:
-            master = __grains__['master']
-        else:
-            master = socket.gethostname()  # We *are* the master, so use our hostname
 
         if not isinstance(data, dict):
             log.error('Data sent to splunk_nova_return was not formed as a '
@@ -91,13 +81,11 @@ def returner(ret):
                 for key, value in fai[check_id].iteritems():
                     if key not in ['tag']:
                         event[key] = value
-            event.update({'master': master})
             event.update({'minion_id': minion_id})
             event.update({'dest_host': fqdn})
             event.update({'dest_ip': fqdn_ip4})
 
-            for cloud in clouds:
-                event.update(cloud)
+            event.update(cloud_details)
 
             for custom_field in custom_fields:
                 custom_field_name = 'custom_' + custom_field
@@ -115,7 +103,6 @@ def returner(ret):
 
             rdy = json.dumps(payload)
             requests.post('{}:{}/hubble/nova'.format(indexer, port), rdy, auth=HTTPBasicAuth(user, password))
-
 
         for suc in data.get('Success', []):
             check_id = suc.keys()[0]
@@ -130,13 +117,11 @@ def returner(ret):
                 for key, value in suc[check_id].iteritems():
                     if key not in ['tag']:
                         event[key] = value
-            event.update({'master': master})
             event.update({'minion_id': minion_id})
             event.update({'dest_host': fqdn})
             event.update({'dest_ip': fqdn_ip4})
 
-            for cloud in clouds:
-                event.update(cloud)
+            event.update(cloud_details)
 
             for custom_field in custom_fields:
                 custom_field_name = 'custom_' + custom_field
@@ -155,19 +140,16 @@ def returner(ret):
             rdy = json.dumps(payload)
             requests.post('{}:{}/hubble/nova'.format(indexer, port), rdy, auth=HTTPBasicAuth(user, password))
 
-
         if data.get('Compliance', None):
             payload = {}
             event = {}
             event.update({'job_id': jid})
             event.update({'compliance_percentage': data['Compliance']})
-            event.update({'master': master})
             event.update({'minion_id': minion_id})
             event.update({'dest_host': fqdn})
             event.update({'dest_ip': fqdn_ip4})
 
-            for cloud in clouds:
-                event.update(cloud)
+            event.update(cloud_details)
 
             for custom_field in custom_fields:
                 custom_field_name = 'custom_' + custom_field
